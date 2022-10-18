@@ -1,0 +1,9 @@
+.container {
+  width: 300px;
+  max-width: 100%;
+  padding: 16px;
+  margin: auto;
+}
+.text-white {
+  color: white;
+}
