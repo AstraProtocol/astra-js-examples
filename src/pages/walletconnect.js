@@ -7,17 +7,30 @@ import axios from 'axios';
 import _ from 'lodash';
 import { hex2Bech32 } from '../utils';
 import { SignClient, QRCodeModal, RELAY_URL } from "@astra-sdk/wallet-connect";
+import { TxRaw } from "cosmjs-types/cosmos/tx/v1beta1/tx";
+import { makeAuthInfoBytes, Registry } from "@cosmjs/proto-signing";
+import { MsgSend } from "cosmjs-types/cosmos/bank/v1beta1/tx";
+import { PubKey } from "cosmjs-types/cosmos/crypto/secp256k1/keys";
+import { Any } from "cosmjs-types/google/protobuf/any";
+import { Int53 } from "@cosmjs/math";
+import { SignMode } from "cosmjs-types/cosmos/tx/signing/v1beta1/signing";
+import { fromBase64 } from "@cosmjs/encoding";
+import {
+  AminoTypes,
+  createBankAminoConverters
+} from '@cosmjs/stargate';
+
 const PROTOCOL = window.location.protocol === 'http' ? 'ws://' : 'wss://';
 const DENOM = 'aastra';
-const GAS_LIMIT = 200000;
-const GAS_PRICE = 1000000000; // aastra
+const GAS_LIMIT = 260000;
+const GAS_PRICE = 100000000000; // aastra
 const NETWORKS = [
   {
     name: 'Testnet',
     key: 'testnet',
     rpc: 'https://rpc.astranaut.dev',
     api: 'https://api.astranaut.dev',
-    chainId: 'astra_11115-2'
+    chainId: 'astra_11115-1'
   },
   {
     name: 'Mainnet',
@@ -28,15 +41,77 @@ const NETWORKS = [
   }
 ];
 const NETWORK_PREFIX = 'astra-';
-
+const broadcastTx = async (aminoResponse) => {
+  const bankTypes = [
+    ['/cosmos.bank.v1beta1.MsgSend', MsgSend],
+  ];
+  
+  const REGISTRY = new Registry(bankTypes);
+  
+  const AMINO_TYPES = new AminoTypes({
+    ...createBankAminoConverters(),
+  });
+  const sendTx = async tx => {
+    // return;
+    const params = {
+      tx_bytes: Buffer.from(tx).toString('base64'),
+      mode: 'BROADCAST_MODE_SYNC',
+    };
+    const {data} = await axios.post(NETWORKS[0].api + '/cosmos/tx/v1beta1/txs', params);
+    return data;
+  }
+  // const decodedPubkey = Buffer.from(pubkeyBase58, 'base64');
+  const signedGasLimit = Int53.fromString(String(aminoResponse.signed.fee.gas)).toNumber();
+  const signedSequence = Int53.fromString(String(aminoResponse.signed.sequence)).toNumber();
+  const signMode = SignMode.SIGN_MODE_LEGACY_AMINO_JSON;
+  function encodePubkey(pubkey) {
+    const pubkeyProto = PubKey.fromPartial({
+      key: fromBase64(pubkey.value),
+    });
+    return Any.fromPartial({
+      typeUrl: '/ethermint.crypto.v1.ethsecp256k1.PubKey',
+      value: Uint8Array.from(PubKey.encode(pubkeyProto).finish()),
+    });
+  }
+  const pubkey = encodePubkey(aminoResponse.signature.pub_key);
+  const signedAuthInfoBytes = makeAuthInfoBytes(
+    [{ pubkey, sequence: signedSequence }],
+    aminoResponse.signed.fee.amount,
+    signedGasLimit,
+    signMode
+  );
+  const signedTxBody = {
+    messages: aminoResponse.signed.msgs.map(i => AMINO_TYPES.fromAmino(i)),
+    memo: aminoResponse.signed.memo,
+  };
+  const signedTxBodyEncodeObject = {
+    typeUrl: '/cosmos.tx.v1beta1.TxBody',
+    value: signedTxBody,
+  };
+  const signedTxBodyBytes = REGISTRY.encode(signedTxBodyEncodeObject);
+  const txRaw = TxRaw.fromPartial({
+    bodyBytes: Buffer.from(signedTxBodyBytes),
+    authInfoBytes: Buffer.from(signedAuthInfoBytes),
+    signatures: [
+      fromBase64(aminoResponse.signature.signature, 'base64')
+    ],
+  });
+  const tx = TxRaw.encode(txRaw).finish();
+  console.log({
+    bodyBytes: Buffer.from(signedTxBodyBytes),
+    authInfoBytes: Buffer.from(signedAuthInfoBytes),
+  })
+  const broadcastResult = await sendTx(tx);
+  console.log({broadcastResult})
+}
 const getAccountNumberAndSequence = async (address, api) => {
   try {
     const res = await axios({
-      url: api + '/auth/accounts/' + address
+      url: api + '/cosmos/auth/v1beta1/accounts/' + address
     })
     return {
-      account_number: _.get(res, 'data.result.base_account.account_number'),
-      sequence: _.get(res, 'data.result.base_account.sequence', 0),
+      account_number: _.get(res, 'data.account.base_account.account_number'),
+      sequence: _.get(res, 'data.account.base_account.sequence', 0),
     }
   } catch(e) {
     return {};
@@ -58,6 +133,10 @@ const TransferForm = props => {
     onFinish={onFinish}
     onFinishFailed={onFinishFailed}
     autoComplete="off"
+    initialValues={{
+      address: 'astra17fn5x5nefxgnpgyfd59033l647xt44celq0x99',
+      amount: '1'
+    }}
     >
 
     <b>Transfer</b>
@@ -154,7 +233,8 @@ function App() {
   useEffect(() => {
     (async () => {
       const client = await SignClient.init({
-        relayUrl: PROTOCOL + RELAY_URL,
+        relayUrl: 'wss://relay.walletconnect.com',
+        projectId: 'af3dd8c81db591806b87e9dbdd42d670',
         metadata: {
           name: 'DEMO DAPP',
           description: 'Demo to connect via Wallet Connect',
@@ -206,8 +286,6 @@ function App() {
       sequence,
       chainId,
     }
-    // sign params
-    // https://cosmos.github.io/cosmjs/latest/stargate/interfaces/AminoMsgSend.html
     const params = { 
       messages: [
         { 
@@ -216,7 +294,7 @@ function App() {
             from_address: address,
             to_address: recipient,
             amount: [{
-              amount: amount * 10 ** 18,
+              amount: String(amount * 10 ** 18),
               denom: DENOM
             }]
           },
@@ -224,14 +302,15 @@ function App() {
       ], 
       fee: {
         amount: [{
-          amount: GAS_LIMIT * GAS_PRICE,
+          amount: String(GAS_LIMIT * GAS_PRICE),
           denom: DENOM
         }],
-        gas: GAS_LIMIT
+        gas: String(184737)
       }, 
-      memo: "From demo dapp", 
+      memo: "Send from walletconnect dapp", 
       signerData
     };
+    
     try {
       const aminoResponse = await client.request({
         prompt: true,
@@ -242,9 +321,11 @@ function App() {
           params,
         },
       });
-      console.log({aminoResponse});
+
+      broadcastTx(aminoResponse)
       message.success({content: 'Request approved!'})
     } catch(e) {
+      console.log(e)
       message.error({content: e?.message})
     }
 

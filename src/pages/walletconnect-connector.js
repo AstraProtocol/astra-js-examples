@@ -7,10 +7,9 @@ import axios from 'axios';
 import _ from 'lodash';
 import { hex2Bech32 } from '../utils';
 import { WalletConnectConnector } from '@astra-sdk/walletconnect-connector'
-import { RELAY_URL } from '@astra-sdk/wallet-connect'
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { v4 as uuidv4 } from 'uuid';
-
+const RELAY_URL = 'relay.walletconnect.com'
 const NETWORKS = [
   {
     name: 'Testnet',
@@ -69,7 +68,8 @@ function App() {
 
       await walletconnector.setup({
         logger: 'debug',
-        relayUrl: `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${RELAY_URL}`,
+        projectId: 'af3dd8c81db591806b87e9dbdd42d670',
+        relayUrl: `${window.location.protocol === 'https:' ? 'wss' : 'wss'}://${RELAY_URL}`,
         metadata: {
           name: 'DEMO DAPP',
           description: 'Demo to connect via Wallet Connect',
